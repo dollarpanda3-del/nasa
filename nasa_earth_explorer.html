@@ -1,0 +1,220 @@
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.tab{flex:1;padding:8px 4px;font-size:12px;background:transparent;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--color-text-secondary);font-family:var(--font-sans);font-weight:400}
+.tab.active{color:var(--color-text-primary);border-bottom:2px solid var(--color-text-primary);font-weight:500}
+.tab:hover:not(.active){background:var(--color-background-secondary)}
+.evt-item{padding:8px 0;border-bottom:0.5px solid var(--color-border-tertiary)}
+.metric{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px 12px}
+.metric-label{font-size:11px;color:var(--color-text-secondary);margin-bottom:2px}
+.metric-val{font-size:20px;font-weight:500;color:var(--color-text-primary)}
+.cat-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;flex-shrink:0}
+.legend-row{display:flex;align-items:center;font-size:11px;color:var(--color-text-secondary);margin-bottom:4px}
+#panel-climate,#panel-ai{display:none}
+.ai-text{font-size:13px;line-height:1.7;color:var(--color-text-primary)}
+.action-btn{width:100%;padding:8px;cursor:pointer;font-size:12px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);font-family:var(--font-sans);margin-top:8px}
+.action-btn:hover{background:var(--color-background-secondary)}
+</style>
+
+<h2 class="sr-only">NASA Earth data explorer — interactive map showing active natural events, climate metrics, and AI analysis for any location.</h2>
+
+<div style="display:flex;flex-direction:column;height:600px;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">
+
+  <div style="padding:10px 14px;border-bottom:0.5px solid var(--color-border-tertiary);display:flex;align-items:center;justify-content:space-between;background:var(--color-background-primary);flex-shrink:0">
+    <div>
+      <div style="font-size:15px;font-weight:500;color:var(--color-text-primary);">Home Planet at Your Fingertips</div>
+      <div style="font-size:11px;color:var(--color-text-secondary);">NASA Earth Data Explorer · Click map to analyze any location</div>
+    </div>
+    <div id="status-badge" style="font-size:11px;color:var(--color-text-secondary);background:var(--color-background-secondary);padding:4px 10px;border-radius:var(--border-radius-md);">Loading…</div>
+  </div>
+
+  <div style="display:flex;flex:1;overflow:hidden;">
+
+    <div style="flex:1.6;position:relative;min-width:0;">
+      <div id="map" style="width:100%;height:100%;"></div>
+      <div id="legend" style="position:absolute;bottom:24px;left:10px;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:8px 10px;z-index:1000;">
+        <div class="legend-row"><span class="cat-dot" style="background:#D85A30"></span>Wildfire</div>
+        <div class="legend-row"><span class="cat-dot" style="background:#BA7517"></span>Volcano</div>
+        <div class="legend-row"><span class="cat-dot" style="background:#378ADD"></span>Storm</div>
+        <div class="legend-row"><span class="cat-dot" style="background:#1D9E75"></span>Flood</div>
+        <div class="legend-row"><span class="cat-dot" style="background:#D4537E"></span>Earthquake</div>
+        <div class="legend-row"><span class="cat-dot" style="background:#888780"></span>Other</div>
+      </div>
+    </div>
+
+    <div style="width:240px;flex-shrink:0;border-left:0.5px solid var(--color-border-tertiary);display:flex;flex-direction:column;overflow:hidden;background:var(--color-background-primary);">
+
+      <div style="display:flex;border-bottom:0.5px solid var(--color-border-tertiary);flex-shrink:0;">
+        <button class="tab active" id="tab-events" onclick="showTab('events')">Events</button>
+        <button class="tab" id="tab-climate" onclick="showTab('climate')">Climate</button>
+        <button class="tab" id="tab-ai" onclick="showTab('ai')">AI Explain</button>
+      </div>
+
+      <div id="panel-events" style="flex:1;overflow-y:auto;padding:10px;"></div>
+
+      <div id="panel-climate" style="flex:1;overflow-y:auto;padding:10px;"></div>
+
+      <div id="panel-ai" style="flex:1;overflow-y:auto;padding:10px;"></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const CAT_COLORS = {
+  'Wildfires':'#D85A30','Volcanoes':'#BA7517','Severe Storms':'#378ADD',
+  'Floods':'#1D9E75','Earthquakes':'#D4537E','Sea and Lake Ice':'#85B7EB',
+  'Landslides':'#97C459','Manmade':'#888780','Snow':'#B4B2A9','Drought':'#EF9F27'
+};
+let allEvents = [];
+let selectedCoords = null;
+let clickMarker = null;
+
+const map = L.map('map',{zoomControl:true}).setView([20,10],2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap',maxZoom:18
+}).addTo(map);
+
+function showTab(name){
+  ['events','climate','ai'].forEach(t=>{
+    document.getElementById('panel-'+t).style.display = t===name?'block':'none';
+    document.getElementById('tab-'+t).classList.toggle('active',t===name);
+  });
+}
+
+async function loadEvents(){
+  document.getElementById('status-badge').textContent='Fetching NASA events…';
+  try{
+    const r = await fetch('https://eonet.gsfc.nasa.gov/api/v3/events?limit=30&status=open&days=60');
+    const d = await r.json();
+    allEvents = (d.events||[]).filter(ev=>ev.geometry&&ev.geometry[0]&&ev.geometry[0].type==='Point');
+    plotEvents();
+    renderEventList();
+    document.getElementById('status-badge').textContent=allEvents.length+' active events';
+  } catch(e){
+    document.getElementById('status-badge').textContent='Demo mode';
+    document.getElementById('panel-events').innerHTML='<div style="font-size:12px;color:var(--color-text-secondary);">Could not reach NASA EONET. Check network.</div>';
+  }
+}
+
+function plotEvents(){
+  allEvents.forEach(ev=>{
+    const g=ev.geometry[0];
+    const [lng,lat]=g.coordinates;
+    const cat=ev.categories?.[0]?.title||'Other';
+    const color=CAT_COLORS[cat]||'#888780';
+    const m=L.circleMarker([lat,lng],{radius:6,fillColor:color,color:'#fff',weight:1.5,fillOpacity:0.85,pane:'markerPane'});
+    m.bindPopup(`<b style="font-size:13px">${ev.title}</b><br><span style="font-size:11px;color:#666">${cat} · ${(g.date||'').slice(0,10)}</span>`);
+    m.addTo(map);
+  });
+}
+
+function renderEventList(){
+  const panel=document.getElementById('panel-events');
+  if(allEvents.length===0){panel.innerHTML='<div style="font-size:12px;color:var(--color-text-secondary);">No active events.</div>';return;}
+  panel.innerHTML=allEvents.slice(0,20).map(ev=>{
+    const cat=ev.categories?.[0]?.title||'Other';
+    const color=CAT_COLORS[cat]||'#888780';
+    const date=(ev.geometry[0].date||'').slice(0,10);
+    const [lng,lat]=ev.geometry[0].coordinates;
+    return `<div class="evt-item" style="cursor:pointer" onclick="focusEvent(${lat},${lng})">
+      <div style="display:flex;align-items:flex-start;gap:6px">
+        <span class="cat-dot" style="background:${color};margin-top:4px"></span>
+        <div>
+          <div style="font-size:12px;font-weight:500;color:var(--color-text-primary);line-height:1.4">${ev.title}</div>
+          <div style="font-size:11px;color:var(--color-text-secondary);margin-top:1px">${cat} · ${date}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function focusEvent(lat,lng){
+  map.setView([lat,lng],5);
+}
+
+map.on('click',function(e){
+  const {lat,lng}=e.latlng;
+  selectedCoords={lat,lng};
+  if(clickMarker)map.removeLayer(clickMarker);
+  clickMarker=L.marker([lat,lng]).addTo(map);
+  clickMarker.bindPopup(`<b>Selected location</b><br>${lat.toFixed(2)}°, ${lng.toFixed(2)}°`).openPopup();
+  showTab('climate');
+  loadClimate(lat,lng);
+});
+
+async function loadClimate(lat,lng){
+  const panel=document.getElementById('panel-climate');
+  panel.innerHTML='<div style="font-size:12px;color:var(--color-text-secondary);padding:8px 0">Querying NASA POWER…</div>';
+  const today=new Date();
+  const fmt=d=>d.toISOString().slice(0,10).replace(/-/g,'');
+  const end=fmt(today);
+  const start=fmt(new Date(today-8*864e5));
+  try{
+    const url=`https://power.larc.nasa.gov/api/temporal/daily/point?parameters=T2M,PRECTOTCORR,RH2M,WS2M&community=RE&longitude=${lng.toFixed(3)}&latitude=${lat.toFixed(3)}&start=${start}&end=${end}&format=JSON`;
+    const r=await fetch(url);
+    const d=await r.json();
+    const p=d?.properties?.parameter;
+    if(!p)throw new Error();
+    const vals=k=>Object.values(p[k]||{}).filter(v=>v>-900);
+    const avg=arr=>arr.length?(arr.reduce((a,b)=>a+b,0)/arr.length):0;
+    const t=vals('T2M'),rh=vals('RH2M'),pr=vals('PRECTOTCORR'),ws=vals('WS2M');
+    const avgT=avg(t).toFixed(1),avgRH=avg(rh).toFixed(0),totPr=pr.reduce((a,b)=>a+b,0).toFixed(1),avgWS=avg(ws).toFixed(1);
+    window._climate={lat,lng,avgT,avgRH,totPr,avgWS};
+    panel.innerHTML=`
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:10px">Last 7 days · ${lat.toFixed(2)}°, ${lng.toFixed(2)}°</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px">
+        <div class="metric"><div class="metric-label">Temperature</div><div class="metric-val">${avgT}°C</div></div>
+        <div class="metric"><div class="metric-label">Humidity</div><div class="metric-val">${avgRH}%</div></div>
+        <div class="metric"><div class="metric-label">Precipitation</div><div class="metric-val">${totPr}mm</div></div>
+        <div class="metric"><div class="metric-label">Wind speed</div><div class="metric-val">${avgWS}m/s</div></div>
+      </div>
+      <button class="action-btn" onclick="runAI()">Explain this with AI ↗</button>
+    `;
+  }catch(e){
+    panel.innerHTML=`<div style="font-size:12px;color:var(--color-text-secondary)">NASA POWER unavailable for this location. Try a different spot.</div>`;
+  }
+}
+
+async function runAI(){
+  showTab('ai');
+  const panel=document.getElementById('panel-ai');
+  panel.innerHTML='<div style="font-size:12px;color:var(--color-text-secondary)">Claude is analyzing NASA data…</div>';
+  const c=window._climate;
+  if(!c){panel.innerHTML='<div style="font-size:12px;color:var(--color-text-secondary)">Click a location on the map first.</div>';return;}
+  const nearby=allEvents.filter(ev=>{
+    const [eLng,eLat]=ev.geometry[0].coordinates;
+    return Math.hypot(eLat-c.lat,eLng-c.lng)<25;
+  }).slice(0,3).map(ev=>ev.title).join('; ')||'none detected nearby';
+  const prompt=`You are a friendly NASA Earth scientist. A user explored location (${(+c.lat).toFixed(2)}°N, ${(+c.lng).toFixed(2)}°E) on a satellite data dashboard.
+
+NASA POWER data (last 7 days):
+- Avg temperature: ${c.avgT}°C
+- Humidity: ${c.avgRH}%
+- Precipitation: ${c.totPr}mm
+- Wind speed: ${c.avgWS}m/s
+
+Active EONET events nearby: ${nearby}
+
+In 3–4 friendly, plain-English sentences, explain what this data means for people living here. Identify the region if you can from the coordinates, note if conditions seem typical or unusual, and give one practical insight. Keep it warm and accessible — imagine talking to a curious student.`;
+  try{
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})
+    });
+    const data=await res.json();
+    const text=data.content?.map(b=>b.text||'').join('')||'No response.';
+    panel.innerHTML=`
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:8px">AI analysis · ${(+c.lat).toFixed(2)}°, ${(+c.lng).toFixed(2)}°</div>
+      <div class="ai-text">${text}</div>
+      <div style="margin-top:12px;font-size:10px;color:var(--color-text-tertiary)">Claude · NASA POWER · NASA EONET</div>
+    `;
+  }catch(e){
+    panel.innerHTML='<div style="font-size:12px;color:var(--color-text-secondary)">AI unavailable. NASA data still works above.</div>';
+  }
+}
+
+loadEvents();
+</script>
